@@ -1,0 +1,654 @@
+8048 Assembler           Version 2.08   03/31/123 23:12:58    Page 1
+TIMER.ASM
+
+
+
+    1 0000              ; TIMER - programmable lab timer + clock
+    2 0000              ; Written for 8048 Assembler/Simulator/Programmer by AceBus
+    3 0000              
+    4 0000              ; R5 - timer reg (timer decrements it)
+    5 0000              ; timer isr use register bank 1, main code use register bank 0
+    6 0000              
+    7 0000              hd44780_loop_delay EQU 20
+    8 0000              timer_reload_value EQU 0100h-50
+    9 0000              timer_per_second   EQU 250 ; real value
+   10 0000              ;timer_per_second   EQU 5 ; debug value
+   11 0000              timer_signal_time  EQU 3
+   12 0000              
+   14 0000              ;**************************************************************************
+   15 0000                      ORG     0 ;reset interrupt location
+   16 0000 0409                 JMP     reset
+   17 0002              
+   18 0003                      ORG     3 ;input interrupt location
+   19 0003 93                   RETR
+   20 0004              
+   21 0007                      ORG     7 ;timer interrupt location
+   22 0007 2466                 JMP timer_isr
+   23 0009              ;**************************************************************************
+   24 0009              btn_state DS 1 ; bit0 - MODE, bit1 - PLUS 
+   25 0009              setup_state DS 1 ;0-5 - number of value to set, other - normal work
+   26 0009              invert_selected_item DS 1 ;counter 
+   27 0009              reset:
+   28 0009                      ;clear memory and regs
+   29 0009 B87F                 MOV R0, #127
+   30 000B 2300                 MOV A, #0
+   31 000D              init_clean_ram:
+   32 000D A0                   MOV @R0, A
+   33 000E E80D                 DJNZ R0, init_clean_ram
+   34 0010                      
+   35 0010                      ;other init
+   36 0010 34C5                 CALL init
+   37 0012                      
+   38 0012 B5                   CPL F1
+   39 0013 85                   CLR F0
+   40 0014 95                   CPL F0
+   41 0015                      
+   42 0015              display_update_loop:        
+   43 0015              
+   44 0015 2386                 MOV A, #086h ; [Set DDRAM address] first line
+   45 0017 14DC                 CALL send_to_display       
+   46 0019                      
+   47 0019 B920                 MOV R1, #setup_state
+   48 001B F1                   MOV A, @R1
+   49 001C AA                   MOV R2, A
+   50 001D                      
+   51 001D B822                 MOV R0, #time_now_h
+   52 001F 149B                 CALL print_time
+   53 0021                      
+   54 0021 23C7                 MOV A, #0C7h ; [Set DDRAM address] second line
+   55 0023 14DC                 CALL send_to_display   
+   56 0025                              
+   57 0025 FA                   MOV A, R2
+   58 0026 03FD                 ADD A, #0FDh
+8048 Assembler           Version 2.08   03/31/123 23:12:58    Page 2
+TIMER.ASM
+
+
+
+   59 0028 AA                   MOV R2, A
+   60 0029                      
+   61 0029 B825                 MOV R0, #time_alarm_h
+   62 002B 149B                 CALL print_time
+   63 002D                      
+   64 002D                      ;wait a bit
+   65 002D 2302                 MOV A, #2
+   66 002F 3407                 CALL delay_timer
+   67 0031              
+   68 0031 B921                 MOV R1, #invert_selected_item
+   69 0033 11                   INC @R1
+   70 0034 F1                   MOV A, @R1
+   71 0035 0396                 ADD A, #096h
+   72 0037 C642                 JZ do_invert
+   73 0039 F1                   MOV A, @R1
+   74 003A 037D                 ADD A, #07Dh
+   75 003C C640                 JZ do_clear_invert
+   76 003E 0443                 JMP do_not_invert
+   77 0040              do_clear_invert:
+   78 0040 B100                 MOV @R1, #0
+   79 0042              do_invert:
+   80 0042 B5                   CPL F1
+   81 0043              do_not_invert:
+   82 0043              
+   83 0043 B820                 MOV R0, #setup_state
+   84 0045 B91F                 MOV R1, #btn_state
+   85 0047                      
+   86 0047                      ;test MODE button
+   87 0047 F1                   MOV A, @R1
+   88 0048 2669                 JNT0 mode_btn_free
+   89 004A                      ;process MODE high
+   90 004A 5301                 ANL A, #001h
+   91 004C 966C                 JNZ mode_check_end
+   92 004E F1                   MOV A, @R1
+   93 004F                      ;у хомяков 16 зубов, 4 из них - передние резцы
+   94 004F 4301                 ORL A, #001h
+   95 0051 A1                   MOV @R1, A
+   96 0052                      
+   97 0052                      ;increment setup state, use 0 if 7
+   98 0052 10                   INC @R0
+   99 0053 F0                   MOV A, @R0
+  100 0054 03F9                 ADD A, #0F9h 
+  101 0056 965A                 JNZ do_not_reload_setup_state
+  102 0058 B000                 MOV @R0, #0
+  103 005A              do_not_reload_setup_state:
+  104 005A F0                   MOV A, @R0
+  105 005B                      
+  106 005B B928                 MOV R1, #start_time_count
+  107 005D 03FA                 ADD A, #0FAh
+  108 005F 9665                 JNZ disable_time
+  109 0061 B101                 MOV @R1, #1
+  110 0063 0467                 JMP time_processed
+  111 0065              disable_time:
+  112 0065 B100                 MOV @R1, #0
+  113 0067              time_processed:
+  114 0067                      
+  115 0067 046C                 JMP mode_check_end
+8048 Assembler           Version 2.08   03/31/123 23:12:58    Page 3
+TIMER.ASM
+
+
+
+  116 0069              mode_btn_free:
+  117 0069                      ;process MODE low
+  118 0069 53FE                 ANL A, #0FEh
+  119 006B A1                   MOV @R1, A
+  120 006C              mode_check_end:
+  121 006C              
+  122 006C B91F                 MOV R1, #btn_state
+  123 006E                      ;test PLUS button
+  124 006E F1                   MOV A, @R1
+  125 006F 4696                 JNT1 plus_btn_free
+  126 0071                      ;process PLUS high
+  127 0071 5302                 ANL A, #002h
+  128 0073 9699                 JNZ plus_check_end
+  129 0075 F1                   MOV A, @R1
+  130 0076 4302                 ORL A, #002h
+  131 0078 A1                   MOV @R1, A
+  132 0079                      
+  133 0079 F0                   MOV A, @R0
+  134 007A 97                   CLR C
+  135 007B 03FA                 ADD A, #0FAh
+  136 007D F699                 JC plus_check_end
+  137 007F                      
+  138 007F                      ;load time addr
+  139 007F F0                   MOV A, @R0
+  140 0080 0322                 ADD A, #time_now_h
+  141 0082 A9                   MOV R1, A
+  142 0083                      
+  143 0083 F0                   MOV A, @R0
+  144 0084 C68E                 JZ it_is_hour
+  145 0086 03FD                 ADD A, #0FDh
+  146 0088 C68E                 JZ it_is_hour
+  147 008A BC60                 MOV R4, #060h
+  148 008C 0490                 JMP increase
+  149 008E              it_is_hour:
+  150 008E BC24                 MOV R4, #024h
+  151 0090              increase:
+  152 0090 F1                   MOV A, @R1
+  153 0091 5418                 CALL inc_bcd_with_maximum
+  154 0093 A1                   MOV @R1, A
+  155 0094                      
+  156 0094 0499                 JMP plus_check_end
+  157 0096                      
+  158 0096              plus_btn_free:
+  159 0096                      ;process PLUS low
+  160 0096 53FD                 ANL A, #0FDh
+  161 0098 A1                   MOV @R1, A
+  162 0099              plus_check_end:
+  163 0099              
+  164 0099 0415                 JMP display_update_loop
+  165 009B              ;**************************************************************************
+  166 009B              ; R0 - pointer to h-m-s bcd bytes
+  167 009B              ; R2 - number of blinking led
+  168 009B              print_time:
+  169 009B              
+  170 009B 97                   CLR C
+  171 009C 85                   CLR F0
+  172 009D              
+8048 Assembler           Version 2.08   03/31/123 23:12:58    Page 4
+TIMER.ASM
+
+
+
+  173 009D                      ;hour
+  174 009D FA                   MOV A, R2
+  175 009E 96AA                 JNZ print_time_show_hour
+  176 00A0 76AA                 JF1 print_time_show_hour
+  177 00A2              
+  178 00A2 2320                 MOV A, #' '
+  179 00A4 14DC                 CALL send_to_display
+  180 00A6 14DC                 CALL send_to_display
+  181 00A8 04AD                 JMP print_time_skip_show_hour
+  182 00AA              print_time_show_hour:
+  183 00AA F0                   MOV A, @R0
+  184 00AB 3411                 CALL display_send_hex
+  185 00AD              print_time_skip_show_hour:
+  186 00AD              
+  187 00AD                      ;colon
+  188 00AD 233A                 MOV A, #':'
+  189 00AF 14DC                 CALL send_to_display
+  190 00B1              
+  191 00B1 18                   INC R0
+  192 00B2                              
+  193 00B2                      ;minute
+  194 00B2 FA                   MOV A, R2
+  195 00B3 03FF                 ADD A, #0FFh
+  196 00B5 96C1                 JNZ print_time_show_minute
+  197 00B7 76C1                 JF1 print_time_show_minute
+  198 00B9              
+  199 00B9 2320                 MOV A, #' '
+  200 00BB 14DC                 CALL send_to_display
+  201 00BD 14DC                 CALL send_to_display
+  202 00BF 04C4                 JMP print_time_skip_show_minute
+  203 00C1              print_time_show_minute:
+  204 00C1 F0                   MOV A, @R0
+  205 00C2 3411                 CALL display_send_hex
+  206 00C4              print_time_skip_show_minute:
+  207 00C4              
+  208 00C4                      ;colon
+  209 00C4 233A                 MOV A, #':'
+  210 00C6 14DC                 CALL send_to_display
+  211 00C8                              
+  212 00C8 18                   INC R0
+  213 00C9                      
+  214 00C9                      ;second
+  215 00C9 FA                   MOV A, R2
+  216 00CA 03FE                 ADD A, #0FEh
+  217 00CC 96D8                 JNZ print_time_show_second
+  218 00CE 76D8                 JF1 print_time_show_second
+  219 00D0              
+  220 00D0 2320                 MOV A, #' '
+  221 00D2 14DC                 CALL send_to_display
+  222 00D4 14DC                 CALL send_to_display
+  223 00D6 04DB                 JMP print_time_skip_show_second
+  224 00D8              print_time_show_second:
+  225 00D8 F0                   MOV A, @R0
+  226 00D9 3411                 CALL display_send_hex
+  227 00DB              print_time_skip_show_second:
+  228 00DB              
+  229 00DB 93                   RETR
+8048 Assembler           Version 2.08   03/31/123 23:12:59    Page 5
+TIMER.ASM
+
+
+
+  230 00DC              ;**************************************************************************
+  231 00DC              ; A - data to send
+  232 00DC              ; F0 - register select, 0 - data, 1 - command
+  233 00DC              send_to_display:
+  234 00DC AF                   MOV R7, A
+  235 00DD 47                   SWAP A
+  236 00DE 530F                 ANL A, #00Fh
+  237 00E0              
+  238 00E0 B6E4                 JF0 send_to_display_send1
+  239 00E2 4310                 ORL A, #010h ;it it data
+  240 00E4              send_to_display_send1:
+  241 00E4              
+  242 00E4 39                   OUTL P1, A
+  243 00E5 8920                 ORL P1, #020h
+  244 00E7                      
+  245 00E7 2314                 MOV A, #hd44780_loop_delay
+  246 00E9 340C                 CALL delay_loop
+  247 00EB                      
+  248 00EB 99DF                 ANL P1, #0DFh
+  249 00ED              
+  250 00ED 2314                 MOV A, #hd44780_loop_delay
+  251 00EF 340C                 CALL delay_loop
+  252 00F1                      
+  253 00F1 FF                   MOV A, R7
+  254 00F2 530F                 ANL A, #00Fh
+  255 00F4              
+  256 00F4 B6F8                 JF0 send_to_display_send2
+  257 00F6 4310                 ORL A, #010h ;it it data
+  258 00F8              send_to_display_send2:
+  259 00F8              
+  260 00F8 39                   OUTL P1, A
+  261 00F9 8920                 ORL P1, #020h
+  262 00FB                      
+  263 00FB 2314                 MOV A, #hd44780_loop_delay
+  264 00FD 340C                 CALL delay_loop
+  265 00FF                      
+  266 00FF 99DF                 ANL P1, #0DFh
+  267 0101                      
+  268 0101 2314                 MOV A, #hd44780_loop_delay
+  269 0103 340C                 CALL delay_loop
+  270 0105 FF                   MOV A, R7
+  271 0106 93                   RETR
+  272 0107              ;**************************************************************************
+  273 0107              ;A - number of 4ms intervals to wait
+  274 0107              delay_timer:
+  275 0107 AD                   MOV R5, A
+  276 0108              delay_timer_wait:
+  277 0108 FD                   MOV A, R5
+  278 0109 9608                 JNZ delay_timer_wait
+  279 010B 93                   RETR
+  280 010C              ;**************************************************************************
+  281 010C              ;A - number of loops
+  282 010C              delay_loop:
+  283 010C 28                   XCH A, R0
+  284 010D              delay_loop_loop:
+  285 010D E80D                 DJNZ R0, delay_loop_loop
+  286 010F 28                   XCH A, R0
+8048 Assembler           Version 2.08   03/31/123 23:12:59    Page 6
+TIMER.ASM
+
+
+
+  287 0110 93                   RETR
+  288 0111              ;**************************************************************************
+  289 0111              display_send_hex:        
+  290 0111 AE                   MOV R6, A
+  291 0112 47                   SWAP A
+  292 0113 530F                 ANL A, #00Fh
+  293 0115                      
+  294 0115 AC                   MOV R4, A
+  295 0116 03F6                 ADD A, #0F6h
+  296 0118 FC                   MOV A, R4
+  297 0119 E61D                 JNC display_send_hex_is_not_hex1
+  298 011B 0307                 ADD A, #'A'-('0'+10)
+  299 011D              display_send_hex_is_not_hex1:
+  300 011D 0330                 ADD A, #'0'
+  301 011F                      
+  302 011F 14DC                 CALL send_to_display
+  303 0121                      
+  304 0121 FE                   MOV A, R6
+  305 0122 530F                 ANL A, #00Fh
+  306 0124                      
+  307 0124 AC                   MOV R4, A
+  308 0125 03F6                 ADD A, #0F6h
+  309 0127 FC                   MOV A, R4
+  310 0128 E62C                 JNC display_send_hex_is_not_hex2
+  311 012A 0307                 ADD A, #'A'-('0'+10)
+  312 012C              display_send_hex_is_not_hex2:
+  313 012C 0330                 ADD A, #'0'
+  314 012E                      
+  315 012E 14DC                 CALL send_to_display
+  316 0130              
+  317 0130 93                   RETR
+  318 0131              ;**************************************************************************
+  319 0131              ;A - pointer to current page program data null-terminated str
+  320 0131 20 20 20     hello_msg1:  DB   '   LAB  TIMER',0
+      0134 4C 41 42
+      0137 20 20 54
+      013A 49 4D 45
+      013D 52 00
+  321 013F 20 20 20     hello_msg2:  DB   '   KP1816BE39',0
+      0142 4B 50 31
+      0145 38 31 36
+      0148 42 45 33
+      014B 39 00
+  322 014D 54 49 4D     work_msg1: DB 'TIME:',0
+      0150 45 3A 00
+  323 0153 41 4C 41     work_msg2: DB 'ALARM:',0
+      0156 52 4D 3A
+ 00
+  324 015A              send_display_str:
+  325 015A 85                   CLR F0
+  326 015B AE                   MOV R6, A
+  327 015C A3                   MOVP A, @A
+  328 015D C665                 JZ send_display_str_end
+  329 015F 14DC                 call send_to_display
+  330 0161 FE                   MOV A, R6
+  331 0162 17                   INC A
+  332 0163 245A                 JMP send_display_str
+8048 Assembler           Version 2.08   03/31/123 23:12:59    Page 7
+TIMER.ASM
+
+
+
+  333 0165              send_display_str_end:
+  334 0165 93                   RETR
+  335 0166              ;**************************************************************************
+  336 0166              time_now_h ds 1
+  337 0166              time_now_m ds 1
+  338 0166              time_now_s ds 1
+  339 0166              time_alarm_h ds 1
+  340 0166              time_alarm_m ds 1
+  341 0166              time_alarm_s ds 1
+  342 0166              start_time_count ds 1
+  343 0166              backup_a ds 1
+  344 0166              timer_isr: ;250Hz, every 4 ms
+  345 0166 D5                   SEL RB1
+  346 0167 B829                 MOV R0, #backup_a
+  347 0169 A0                   MOV @R0, A
+  348 016A                      
+  349 016A EBB8                 DJNZ R3, timer_isr_time_update_skip
+  350 016C BBFA                 MOV R3, #timer_per_second
+  351 016E                      ;update time
+  352 016E                            
+  353 016E B828                 MOV R0, #start_time_count
+  354 0170 F0                   MOV A, @R0
+  355 0171 C6B8                 JZ timer_isr_time_update_skip
+  356 0173                      
+  357 0173 B924                 MOV R1, #time_now_s
+  358 0175 F1                   MOV A, @R1
+  359 0176 BC60                 MOV R4, #060h
+  360 0178 5418                 CALL inc_bcd_with_maximum
+  361 017A A1                   MOV @R1, A
+  362 017B                      
+  363 017B E68D                 JNC timer_isr_time_update_check_alarm
+  364 017D                      
+  365 017D C9                   DEC R1
+  366 017E F1                   MOV A, @R1
+  367 017F BC60                 MOV R4, #060h
+  368 0181 5418                 CALL inc_bcd_with_maximum
+  369 0183 A1                   MOV @R1, A
+  370 0184                      
+  371 0184 E68D                 JNC timer_isr_time_update_check_alarm
+  372 0186                      
+  373 0186 C9                   DEC R1
+  374 0187 F1                   MOV A, @R1
+  375 0188 BC24                 MOV R4, #024h
+  376 018A 5418                 CALL inc_bcd_with_maximum
+  377 018C A1                   MOV @R1, A
+  378 018D                      
+  379 018D              timer_isr_time_update_check_alarm:
+  380 018D                      
+  381 018D B922                 MOV R1, #time_now_h
+  382 018F B825                 MOV R0, #time_alarm_h
+  383 0191 F0                   MOV A, @R0
+  384 0192 37                   CPL A
+  385 0193 17                   INC A
+  386 0194 61                   ADD A, @R1
+  387 0195 96AF                 JNZ timer_isr_time_update_end
+  388 0197                      
+  389 0197 B923                 MOV R1, #time_now_m
+8048 Assembler           Version 2.08   03/31/123 23:12:59    Page 8
+TIMER.ASM
+
+
+
+  390 0199 B826                 MOV R0, #time_alarm_m
+  391 019B F0                   MOV A, @R0
+  392 019C 37                   CPL A
+  393 019D 17                   INC A
+  394 019E 61                   ADD A, @R1
+  395 019F 96AF                 JNZ timer_isr_time_update_end
+  396 01A1                      
+  397 01A1 B924                 MOV R1, #time_now_s
+  398 01A3 B827                 MOV R0, #time_alarm_s
+  399 01A5 F0                   MOV A, @R0
+  400 01A6 37                   CPL A
+  401 01A7 17                   INC A
+  402 01A8 61                   ADD A, @R1
+  403 01A9 96AF                 JNZ timer_isr_time_update_end
+  404 01AB                      
+  405 01AB                      ;alarm!
+  406 01AB BA04                 MOV R2, #timer_signal_time+1
+  407 01AD 9AEF                 ANL P2, #0EFh ;enable relay
+  408 01AF              
+  409 01AF              timer_isr_time_update_end:
+  410 01AF FA                   MOV A, R2
+  411 01B0 C6B6                 JZ timer_isr_alarm_not_in_process
+  412 01B2 07                   DEC A
+  413 01B3 AA                   MOV R2, A
+  414 01B4 96B8                 JNZ timer_isr_time_update_skip
+  415 01B6              timer_isr_alarm_not_in_process:
+  416 01B6 8A10                 ORL P2, #010h ;disable relay
+  417 01B8                      
+  418 01B8              timer_isr_time_update_skip:
+  419 01B8                      
+  420 01B8                      ;re-init timer
+  421 01B8 23CE                 MOV A, #timer_reload_value;set timer start value
+  422 01BA 62                   MOV T, A
+  423 01BB                      
+  424 01BB B829                 MOV R0, #backup_a
+  425 01BD F0                   MOV A, @R0
+  426 01BE C5                   SEL RB0
+  427 01BF                      
+  428 01BF                      ;decrement timer register
+  429 01BF 2D                   XCH A, R5
+  430 01C0 C6C3                 JZ timer_isr_end
+  431 01C2 07                   DEC A
+  432 01C3              timer_isr_end:
+  433 01C3 2D                   XCH A, R5
+  434 01C4                      
+  435 01C4 93                   RETR
+  436 01C5              ;**************************************************************************
+  437 01C5              init:
+  438 01C5 23CE                 MOV A, #timer_reload_value;set timer start value
+  439 01C7 62                   MOV T, A
+  440 01C8 55                   STRT T ;start timer
+  441 01C9 25                   EN TCNTI ;enable timer interrupt
+  442 01CA              
+  443 01CA                      ;setup 44780 to 4-bit mode
+  444 01CA 2302                 MOV A, #002h
+  445 01CC 39                   OUTL P1, A
+  446 01CD                      
+8048 Assembler           Version 2.08   03/31/123 23:12:59    Page 9
+TIMER.ASM
+
+
+
+  447 01CD 2314                 MOV A, #hd44780_loop_delay
+  448 01CF 340C                 CALL delay_loop
+  449 01D1                      
+  450 01D1 8920                 ORL P1, #020h
+  451 01D3                      
+  452 01D3 2314                 MOV A, #hd44780_loop_delay
+  453 01D5 340C                 CALL delay_loop
+  454 01D7              
+  455 01D7 99DF                 ANL P1, #0DFh
+  456 01D9                      
+  457 01D9 2314                 MOV A, #hd44780_loop_delay
+  458 01DB 340C                 CALL delay_loop
+  459 01DD                      
+  460 01DD                      ;F0=1, so commands to be sended
+  461 01DD 85                   CLR F0
+  462 01DE 95                   CPL F0
+  463 01DF              
+  464 01DF 2301                 MOV A, #001h ; [Clear display]
+  465 01E1 14DC                 CALL send_to_display      
+  466 01E3              
+  467 01E3 2302                 MOV A, #2
+  468 01E5 3407                 CALL delay_timer        
+  469 01E7              
+  470 01E7 2328                 MOV A, #028h ; [Function set] 4-bit + 2 lines + 5x8 dot character font
+  471 01E9 14DC                 CALL send_to_display
+  472 01EB                      
+  473 01EB 2306                 MOV A, #006h ; [Entry mode set] increment+no shift
+  474 01ED 14DC                 CALL send_to_display
+  475 01EF                      
+  476 01EF 230C                 MOV A, #00Ch ; [Display on/off control] on+no cursor+no shift
+  477 01F1 14DC                 CALL send_to_display
+  478 01F3                      
+  479 01F3 2331                 MOV A, #hello_msg1
+  480 01F5 345A                 CALL send_display_str
+  481 01F7                      
+  482 01F7 23C0                 MOV A, #0C0h ; [Set DDRAM address] second line
+  483 01F9 14DC                 CALL send_to_display    
+  484 01FB                      
+  485 01FB 233F                 MOV A, #hello_msg2
+  486 01FD 345A                 CALL send_display_str
+  487 01FF              
+  488 01FF 23FA                 MOV A, #250 ;1 second delay
+  489 0201 3407                 CALL delay_timer   
+  490 0203              
+  491 0203 2301                 MOV A, #001h ; [Clear display]
+  492 0205 14DC                 CALL send_to_display      
+  493 0207              
+  494 0207 2302                 MOV A, #2
+  495 0209 3407                 CALL delay_timer   
+  496 020B                      
+  497 020B 234D                 MOV A, #work_msg1
+  498 020D 345A                 CALL send_display_str
+  499 020F                      
+  500 020F 23C0                 MOV A, #0C0h ; [Set DDRAM address] second line
+  501 0211 14DC                 CALL send_to_display    
+  502 0213                      
+  503 0213 2353                 MOV A, #work_msg2
+8048 Assembler           Version 2.08   03/31/123 23:13:00    Page 10
+TIMER.ASM
+
+
+
+  504 0215 345A                 CALL send_display_str
+  505 0217 93                   RETR
+  506 0218              ;**************************************************************************
+  507 0218              ; A - inout value to increase
+  508 0218              ; R4 - maximum value (not including)
+  509 0218              ; C - carry happens
+  510 0218              inc_bcd_with_maximum:
+  511 0218              
+  512 0218 0301                 ADD A, #1
+  513 021A 57                   DA A
+  514 021B 2C                   XCH A, R4
+  515 021C 37                   CPL A
+  516 021D 6C                   ADD A, R4
+  517 021E 17                   INC A
+  518 021F 97                   CLR C
+  519 0220 9625                 JNZ not_maximum
+  520 0222 A7                   CPL C
+  521 0223 BC00                 MOV R4, #0
+  522 0225              not_maximum:
+  523 0225 2C                   XCH A, R4
+  524 0226                      
+  525 0226 83                   RET
+  526 0227              
+  527 0227              ;**************************************************************************
+  528 0227                      END
+
+Defined Symbols:
+  BACKUP_A                                  000029  41
+  BTN_STATE                                 00001F  31
+  HD44780_LOOP_DELAY                        000014  20
+  INVERT_SELECTED_ITEM                      000021  33
+  SETUP_STATE                               000020  32
+  START_TIME_COUNT                          000028  40
+  TIMER_PER_SECOND                          0000FA  250
+  TIMER_RELOAD_VALUE                        0000CE  206
+  TIMER_SIGNAL_TIME                         000003  3
+  TIME_ALARM_H                              000025  37
+  TIME_ALARM_M                              000026  38
+  TIME_ALARM_S                              000027  39
+  TIME_NOW_H                                000022  34
+  TIME_NOW_M                                000023  35
+  TIME_NOW_S                                000024  36
+
+Defined Labels:
+  DELAY_LOOP                                00010C  268
+  DELAY_LOOP_LOOP                           00010D  269
+  DELAY_TIMER                               000107  263
+  DELAY_TIMER_WAIT                          000108  264
+  DISABLE_TIME                              000065  101
+  DISPLAY_SEND_HEX                          000111  273
+  DISPLAY_SEND_HEX_IS_NOT_HEX1              00011D  285
+  DISPLAY_SEND_HEX_IS_NOT_HEX2              00012C  300
+  DISPLAY_UPDATE_LOOP                       000015  21
+  DO_CLEAR_INVERT                           000040  64
+  DO_INVERT                                 000042  66
+  DO_NOT_INVERT                             000043  67
+  DO_NOT_RELOAD_SETUP_STATE                 00005A  90
+  HELLO_MSG1                                000131  305
+  HELLO_MSG2                                00013F  319
+  INCREASE                                  000090  144
+  INC_BCD_WITH_MAXIMUM                      000218  536
+  INIT                                      0001C5  453
+  INIT_CLEAN_RAM                            00000D  13
+  IT_IS_HOUR                                00008E  142
+  MODE_BTN_FREE                             000069  105
+  MODE_CHECK_END                            00006C  108
+  NOT_MAXIMUM                               000225  549
+  PLUS_BTN_FREE                             000096  150
+  PLUS_CHECK_END                            000099  153
+  PRINT_TIME                                00009B  155
+  PRINT_TIME_SHOW_HOUR                      0000AA  170
+  PRINT_TIME_SHOW_MINUTE                    0000C1  193
+  PRINT_TIME_SHOW_SECOND                    0000D8  216
+  PRINT_TIME_SKIP_SHOW_HOUR                 0000AD  173
+  PRINT_TIME_SKIP_SHOW_MINUTE               0000C4  196
+  PRINT_TIME_SKIP_SHOW_SECOND               0000DB  219
+  RESET                                     000009  9
+  SEND_DISPLAY_STR                          00015A  346
+  SEND_DISPLAY_STR_END                      000165  357
+  SEND_TO_DISPLAY                           0000DC  220
+  SEND_TO_DISPLAY_SEND1                     0000E4  228
+  SEND_TO_DISPLAY_SEND2                     0000F8  248
+  TIMER_ISR                                 000166  358
+  TIMER_ISR_ALARM_NOT_IN_PROCESS            0001B6  438
+  TIMER_ISR_END                             0001C3  451
+  TIMER_ISR_TIME_UPDATE_CHECK_ALAR          00018D  397
+  TIMER_ISR_TIME_UPDATE_END                 0001AF  431
+  TIMER_ISR_TIME_UPDATE_SKIP                0001B8  440
+  TIME_PROCESSED                            000067  103
+  WORK_MSG1                                 00014D  333
+  WORK_MSG2                                 000153  339
